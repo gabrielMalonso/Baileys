@@ -132,7 +132,13 @@ describe('retired app-state records', () => {
 					'messages.update': [
 						{
 							key: { remoteJid: JID, id: 'fictional-incoming', fromMe: false, participant: undefined },
-							update: { status: proto.WebMessageInfo.Status.READ, messageTimestamp: 1700000050 }
+							update: { status: proto.WebMessageInfo.Status.READ }
+						}
+					],
+					'message-receipt.update': [
+						{
+							key: { remoteJid: JID, id: 'fictional-incoming', fromMe: false, participant: undefined },
+							receipt: { userJid: ME.id, readTimestamp: 1700000050 }
 						}
 					]
 				}
