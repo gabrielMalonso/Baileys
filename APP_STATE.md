@@ -38,6 +38,10 @@ A `chat-action` contains its origin, JID, collection, version, action, and avail
 
 Observers run before the maps that consolidate mutations and preserve same-version network replays. Events are delivered after the sync transaction, before consolidated chat callbacks. Records can be historical, repeated, superseded, or part of an initial snapshot; arrival order alone does not establish current state. The original chat projection and its consolidation behavior remain separate. This event is not a durable journal or exactly-once delivery mechanism.
 
+`REMOVE` mutations retire an encrypted app-state record. Their payload describes the old action and must not be applied as a new chat action. They still participate in validation and LTHash accounting, but do not generate `chat-action` or consolidated chat changes. Snapshot records without an operation remain SET records. This matters when a new action under one app-state key is followed by retirement of the previous record under another key, including within the same collection version.
+
+Opening a chat on another device can yield an own-device `read-self` receipt with message IDs. That path produces message read evidence (`messages.update` for a direct chat), rather than `chat-action` or a blanket conversation-read update. A receipt does not establish that all messages or a manually marked-unread conversation are now read. This fork does not convert receipts to conversation state or force periodic resynchronization.
+
 `macVerified` reports successful checks only when verification was enabled and the relevant checks passed. The SDK defaults disable app-state MAC verification; a decoded record with `macVerified: false` is not a verified record. The extension does not change those settings. Aggregate verification failures prevent this new observation from being emitted for the affected patch or snapshot.
 
 ## Other fixes and tests

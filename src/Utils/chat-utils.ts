@@ -289,7 +289,10 @@ export const decodeSyncdMutations = async (
 		}
 
 		const indexStr = Buffer.from(syncAction.index!).toString()
-		onMutation({ syncAction, index: JSON.parse(indexStr) })
+		// REMOVE carries the retired record's old action, not a new state transition.
+		if (operation !== proto.SyncdMutation.SyncdOperation.REMOVE) {
+			onMutation({ syncAction, index: JSON.parse(indexStr) })
+		}
 
 		ltGenerator.mix({
 			indexMac: record.index!.blob!,
