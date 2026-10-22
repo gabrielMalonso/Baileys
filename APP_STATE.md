@@ -29,6 +29,8 @@ A `patch-response` contains the collection, outgoing version, optional request I
 
 Missing responses and explicit nested collection errors reject before advancing local state or producing an own echo. A missing response leaves the remote outcome uncertain. No operation is automatically retried. A response event can still be emitted if the subsequent local transaction commit fails and the call rejects.
 
+The preflight sync commits before the outgoing patch's write transaction starts, under the same patch mutex. A sync listener can therefore queue another `chatModify` without inheriting a transaction context that has already committed when the queued call executes. A later outgoing rejection does not roll back that independently fetched sync state; a failed preflight commit prevents submission of the outgoing patch.
+
 ## Decoded records
 
 A `chat-action` contains its origin, JID, collection, version, action, and available remote timestamp and message range. The range contains only message keys and timestamps, without message content or cryptographic material.
