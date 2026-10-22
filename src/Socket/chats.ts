@@ -941,10 +941,12 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		let response: AppStatePatchResponse | undefined
 
 		const patchRequest = appStatePatchMutex.mutex(async () => {
+			// Sync listeners can queue another patch; they must not inherit a transaction
+			// context that will have committed before that queued patch runs.
+			await resyncAppState([name], false)
+
 			await authState.keys.transaction(async () => {
 				logger.debug({ patch: patchCreate }, 'applying app patch')
-
-				await resyncAppState([name], false)
 
 				const { [name]: currentSyncVersion } = await authState.keys.get('app-state-sync-version', [name])
 				initial = currentSyncVersion ? ensureLTHashStateVersion(currentSyncVersion) : newLTHashState()

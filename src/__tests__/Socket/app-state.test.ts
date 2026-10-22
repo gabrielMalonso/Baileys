@@ -302,9 +302,8 @@ describe('message read receipts are a separate path', () => {
 							'message-receipt.update': [{ key, receipt: { userJid: JID, readTimestamp: 1700000050 } }]
 						}
 					: {
-							'messages.update': [
-								{ key, update: { status: proto.WebMessageInfo.Status.READ, messageTimestamp: 1700000050 } }
-							]
+							'messages.update': [{ key, update: { status: proto.WebMessageInfo.Status.READ } }],
+							'message-receipt.update': [{ key, receipt: { userJid: JID, readTimestamp: 1700000050 } }]
 						}
 			])
 			expect(f.raw).toEqual([])

@@ -29,6 +29,8 @@ A `patch-response` contains the collection, outgoing version, optional request I
 
 Missing responses and explicit nested collection errors reject before advancing local state or producing an own echo. A missing response leaves the remote outcome uncertain. No operation is automatically retried. A response event can still be emitted if the subsequent local transaction commit fails and the call rejects.
 
+The preflight sync commits before the outgoing patch's write transaction starts, under the same patch mutex. A sync listener can therefore queue another `chatModify` without inheriting a transaction context that has already committed when the queued call executes. A later outgoing rejection does not roll back that independently fetched sync state; a failed preflight commit prevents submission of the outgoing patch.
+
 ## Decoded records
 
 A `chat-action` contains its origin, JID, collection, version, action, and available remote timestamp and message range. The range contains only message keys and timestamps, without message content or cryptographic material.
@@ -37,6 +39,10 @@ A `chat-action` contains its origin, JID, collection, version, action, and avail
 - `sync` also includes `representation: 'patch' | 'snapshot'`, `initialSync` and `macVerified`. It does not identify the originating device. Snapshot versions describe the containing snapshot, not the original action version.
 
 Observers run before the maps that consolidate mutations and preserve same-version network replays. Events are delivered after the sync transaction, before consolidated chat callbacks. Records can be historical, repeated, superseded, or part of an initial snapshot; arrival order alone does not establish current state. The original chat projection and its consolidation behavior remain separate. This event is not a durable journal or exactly-once delivery mechanism.
+
+`REMOVE` mutations retire an encrypted app-state record. Their payload describes the old action and must not be applied as a new chat action. They still participate in validation and LTHash accounting, but do not generate `chat-action` or consolidated chat changes. Snapshot records without an operation remain SET records. This matters when a new action under one app-state key is followed by retirement of the previous record under another key, including within the same collection version.
+
+Opening a chat on another device can yield an own-device `read-self` receipt with message IDs. That path produces message read evidence (`messages.update` for a direct chat), rather than `chat-action` or a blanket conversation-read update. A receipt does not establish that all messages or a manually marked-unread conversation are now read. This fork does not convert receipts to conversation state or force periodic resynchronization.
 
 `macVerified` reports successful checks only when verification was enabled and the relevant checks passed. The SDK defaults disable app-state MAC verification; a decoded record with `macVerified: false` is not a verified record. The extension does not change those settings. Aggregate verification failures prevent this new observation from being emitted for the affected patch or snapshot.
 
