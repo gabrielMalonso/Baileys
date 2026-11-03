@@ -42,9 +42,43 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+  cli:
+    name: CLI compatibility
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      commit: ${{ steps.compat.outputs.commit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check out the current CLI source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: gabrielMalonso/whatscli-next
+          ref: main
+          path: .tmp/cli
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24.18.0'
+          package-manager-cache: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: .tmp/cli/package.json
+          run_install: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: owned-sdk
+          path: .tmp/candidate
+      - name: Test the CLI against this run's SDK candidate
+        id: compat
+        run: node maintenance/cli-compat.ts .tmp/cli .tmp/candidate
+
   release:
     name: Publish validated SDK
-    needs: verify
+    needs: [verify, cli]
     if: github.repository == 'gabrielMalonso/Baileys' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     permissions:
@@ -61,7 +95,8 @@ jobs:
         with:
           name: owned-sdk
           path: .tmp/release
-      - name: Publish immutable package and provenance in this fork
+      - name: Publish SDK package and provenance in this fork
         env:
           GH_TOKEN: ${{ github.token }}
+          VALIDATED_CLI_COMMIT: ${{ needs.cli.outputs.commit }}
         run: node maintenance/sdk.ts release
