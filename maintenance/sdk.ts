@@ -240,6 +240,8 @@ function release(root: string): void {
 	const directory = join(root, '.tmp/release')
 	const meta = json(join(directory, 'sdk-release.json'))
 	const commit = run(root, 'git', ['rev-parse', 'HEAD'], true).trim()
+	const cliCommit = process.env.VALIDATED_CLI_COMMIT
+	if (!cliCommit || !/^[a-f0-9]{40}$/.test(cliCommit)) throw new Error('Release requires a validated CLI revision')
 	const actual =
 		'sha512-' +
 		createHash('sha512')
@@ -252,6 +254,8 @@ function release(root: string): void {
 		actual !== meta.integrity
 	)
 		throw new Error('Release artifact provenance or integrity mismatch')
+	meta.validatedCliCommit = cliCommit
+	writeJson(join(directory, 'sdk-release.json'), meta)
 	const existing = spawnSync(
 		'gh',
 		['release', 'view', String(meta.tag), '--repo', repository, '--json', 'assets,isDraft'],
@@ -283,7 +287,7 @@ function release(root: string): void {
 		'--title',
 		`Baileys ${meta.version}`,
 		'--notes',
-		`Validated SDK from ${repository} at ${commit}, based on upstream ${meta.upstreamVersion}. No npm credentials or upstream approval required.`
+		`Validated SDK from ${repository} at ${commit}, based on upstream ${meta.upstreamVersion}. CLI compatibility passed at gabrielMalonso/whatscli-next commit ${cliCommit}.`
 	])
 }
 
