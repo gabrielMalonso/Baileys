@@ -1,6 +1,13 @@
 import { jest } from '@jest/globals'
+import { expandAppStateKeys } from 'whatsapp-rust-bridge'
 import { proto } from '../../../WAProto/index.js'
-import { decodeSyncdSnapshot } from '../../Utils/chat-utils'
+import {
+	chatModificationToAppPatch,
+	decodeSyncdPatch,
+	decodeSyncdSnapshot,
+	newLTHashState
+} from '../../Utils/chat-utils'
+import { hmacSign } from '../../Utils/crypto'
 import { encodedAction, fixture, JID, KEY_ID, modification, silentLogger, syncResponse } from './app-state-fixtures'
 
 beforeEach(() => {
@@ -158,18 +165,51 @@ describe('app-state observations preserve evidence before chat consolidation', (
 		}
 	})
 
-	it('receives server response evidence with own events disabled', async () => {
-		const f = fixture({ emitOwnEvents: false })
-		try {
-			await f.modifyWithRequestId(modification('read', true), 'without-echo')
-			expect(f.observations).toEqual([
-				expect.objectContaining({ kind: 'patch-response', requestId: 'without-echo', status: 'version-matched' })
-			])
-			f.ev.flush()
-			expect(f.batches).toEqual([])
-		} finally {
-			f.close()
-		}
+	describe.each([false, true])('appPatch with emitOwnEvents=%s', emitOwnEvents => {
+		it.each([
+			['read', true],
+			['read', false],
+			['archive', true],
+			['archive', false]
+		] as const)('emits one typed %s=%s echo and preserves response correlation', async (kind, value) => {
+			const f = fixture({ emitOwnEvents })
+			const requestId = `fictional-${kind}-${value}-${emitOwnEvents}`
+			try {
+				const patch = chatModificationToAppPatch(modification(kind, value), JID)
+				await f.sock.appPatch(patch, { requestId })
+				expect(f.observations).toEqual([
+					{
+						kind: 'patch-response',
+						collection: 'regular_low',
+						version: 1,
+						requestId,
+						status: 'version-matched',
+						serverVersion: 1
+					},
+					{
+						kind: 'chat-action',
+						source: 'local-echo',
+						collection: 'regular_low',
+						version: 1,
+						requestId,
+						jid: JID,
+						action: kind === 'read' ? { kind: 'mark-read', read: value } : { kind: 'archive', archived: value },
+						timestamp: 1700000100000,
+						messageRange: {
+							lastMessageTimestamp: 1700000000,
+							messages: [{ id: 'fictional-last', fromMe: false, timestamp: 1700000000 }]
+						}
+					}
+				])
+				const legacyUpdate = [{ id: JID, ...(kind === 'read' ? { unreadCount: value ? 0 : -1 } : { archived: value }) }]
+				expect(f.raw).toEqual(emitOwnEvents ? [legacyUpdate] : [])
+				f.ev.flush()
+				expect(f.batches).toEqual(emitOwnEvents ? [{ 'chats.update': legacyUpdate }] : [])
+				expect(await f.version()).toBe(1)
+			} finally {
+				f.close()
+			}
+		})
 	})
 
 	it('preserves a decoded initial read action even when its old range is discarded from chat state', async () => {
@@ -221,7 +261,13 @@ describe('app-state observations preserve evidence before chat consolidation', (
 		try {
 			await f.modifyWithRequestId(modification('archive', true), 'limited-evidence')
 			expect(f.observations).toEqual([
-				expect.objectContaining({ kind: 'patch-response', status: 'response-received', version: 1 })
+				expect.objectContaining({ kind: 'patch-response', status: 'response-received', version: 1 }),
+				expect.objectContaining({
+					kind: 'chat-action',
+					source: 'local-echo',
+					requestId: 'limited-evidence',
+					version: 1
+				})
 			])
 		} finally {
 			f.close()
@@ -248,6 +294,24 @@ describe('app-state observations preserve evidence before chat consolidation', (
 			const mac = Buffer.from(remote.patch.snapshotMac!)
 			mac[0] = mac[0]! ^ 0xff
 			remote.patch.snapshotMac = mac
+			// Keep patch and record authentication valid so only the aggregate LTHash check fails.
+			const version = Buffer.alloc(8)
+			version.writeUInt32BE(remote.state.version, 4)
+			const valueMacs = remote.patch.mutations!.map(mutation => mutation.record!.value!.blob!.subarray(-32))
+			remote.patch.patchMac = hmacSign(
+				Buffer.concat([mac, ...valueMacs, version, Buffer.from('regular_low')]),
+				expandAppStateKeys(Buffer.alloc(32, 7)).patchMacKey
+			)
+			const decoded = jest.fn()
+			await decodeSyncdPatch(
+				remote.patch,
+				'regular_low',
+				newLTHashState(),
+				async () => ({ keyData: Buffer.alloc(32, 7) }),
+				decoded,
+				true
+			)
+			expect(decoded).toHaveBeenCalledTimes(1)
 			f.syncReplies.push(syncResponse([remote.patch]))
 			await f.sock.resyncAppState(['regular_low'], false)
 			expect(f.observations).toEqual([])
@@ -366,6 +430,132 @@ describe('app-state observations preserve evidence before chat consolidation', (
 				expect.objectContaining({ version: 1, source: 'sync', action: { kind: 'mark-read', read: true } })
 			])
 			expect(f.batches).toHaveLength(1)
+		} finally {
+			f.close()
+		}
+	})
+})
+
+describe('app-state listener failures', () => {
+	it('keeps committed sync and legacy chat callbacks when an observation listener throws', async () => {
+		const f = fixture()
+		const warn = jest.spyOn(silentLogger, 'warn')
+		const laterListener = jest.fn()
+		try {
+			f.ev.on('app-state.update', () => {
+				throw new Error('Fictional private listener error')
+			})
+			f.ev.on('app-state.update', laterListener)
+			const remote = await encodedAction(modification('archive', true))
+			f.syncReplies.push(syncResponse([remote.patch]))
+			await expect(f.sock.resyncAppState(['regular_low'], false)).resolves.toBeUndefined()
+			f.ev.flush()
+			expect(await f.version()).toBe(1)
+			expect(f.batches).toEqual([{ 'chats.update': [{ id: JID, archived: true }] }])
+			expect(laterListener).toHaveBeenCalledWith(
+				expect.objectContaining({ kind: 'chat-action', source: 'sync', version: 1 })
+			)
+			expect(f.observations).toEqual([expect.objectContaining({ source: 'sync', version: 1 })])
+			expect(warn).toHaveBeenCalledWith({ event: 'app-state.update' }, 'app-state.update listener threw')
+		} finally {
+			warn.mockRestore()
+			f.close()
+		}
+	})
+
+	it.each(['patch-response', 'local-echo'] as const)(
+		'preserves a successful patch and its legacy echo when a %s listener throws',
+		async stage => {
+			const f = fixture()
+			const seen: string[] = []
+			try {
+				f.ev.on('app-state.update', event => {
+					const kind = event.kind === 'patch-response' ? event.kind : event.source
+					seen.push(kind)
+					if (kind === stage) throw new Error('Fictional observer failure')
+				})
+				await expect(f.modifyWithRequestId(modification('archive', true), 'throwing-listener')).resolves.toBeUndefined()
+				f.ev.flush()
+				expect(seen).toEqual(['patch-response', 'local-echo'])
+				expect(f.observations).toHaveLength(2)
+				expect(await f.version()).toBe(1)
+				expect(f.batches).toEqual([{ 'chats.update': [{ id: JID, archived: true }] }])
+			} finally {
+				f.close()
+			}
+		}
+	)
+
+	it('preserves the original commit error when a response listener also throws', async () => {
+		const f = fixture({ failCommit: true })
+		let responseSeen = false
+		try {
+			f.ev.on('app-state.update', event => {
+				if (event.kind === 'patch-response') {
+					responseSeen = true
+					throw new Error('Fictional observer failure')
+				}
+			})
+			await expect(f.modifyWithRequestId(modification('archive', true), 'commit-failed')).rejects.toThrow(
+				'Fictional commit failure'
+			)
+			expect(responseSeen).toBe(true)
+			expect(f.observations).toHaveLength(1)
+			expect(await f.version()).toBe(0)
+			expect(f.raw).toEqual([])
+		} finally {
+			f.close()
+		}
+	})
+
+	it('contains rejected listener promises while delivering to later on and process subscribers', async () => {
+		const f = fixture()
+		const warn = jest.spyOn(silentLogger, 'warn')
+		const direct: string[] = []
+		const processed: string[] = []
+		try {
+			f.ev.on('app-state.update', async () => {
+				throw new Error('Fictional async listener failure')
+			})
+			f.ev.on('app-state.update', event => {
+				direct.push(event.kind)
+			})
+			f.ev.process(async events => {
+				if (events['app-state.update']) throw new Error('Fictional async process failure')
+			})
+			f.ev.process(events => {
+				if (events['app-state.update']) processed.push(events['app-state.update'].kind)
+			})
+			await f.modifyWithRequestId(modification('archive', true), 'async-listeners')
+			f.ev.flush()
+			await jest.advanceTimersByTimeAsync(0)
+			expect(direct).toEqual(['patch-response', 'chat-action'])
+			expect(processed).toEqual(direct)
+			expect(f.observations).toHaveLength(2)
+			expect(f.batches).toEqual([{ 'chats.update': [{ id: JID, archived: true }] }])
+			expect(warn).toHaveBeenCalledTimes(4)
+		} finally {
+			warn.mockRestore()
+			f.close()
+		}
+	})
+
+	it('preserves listener snapshots, off and removeAllListeners without removing process subscribers', async () => {
+		const f = fixture()
+		const later = jest.fn()
+		try {
+			f.ev.on('app-state.update', event => {
+				if (event.kind === 'patch-response') f.ev.off('app-state.update', later)
+			})
+			f.ev.on('app-state.update', later)
+			await f.modifyWithRequestId(modification('archive', true), 'before-removal')
+			expect(later).toHaveBeenCalledTimes(1)
+			expect(later).toHaveBeenCalledWith(expect.objectContaining({ kind: 'patch-response' }))
+			f.ev.removeAllListeners('app-state.update')
+			await f.modifyWithRequestId(modification('archive', false), 'after-removal')
+			expect(later).toHaveBeenCalledTimes(1)
+			expect(f.observations).toHaveLength(4)
+			expect(await f.version()).toBe(2)
 		} finally {
 			f.close()
 		}

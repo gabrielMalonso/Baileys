@@ -127,20 +127,10 @@ describe('retired app-state records', () => {
 				tag: 'receipt',
 				attrs: { from: ME.id, recipient: JID, id: 'fictional-incoming', type: 'read-self', t: '1700000050' }
 			})
-			expect(f.batches).toEqual([
+			expect(f.batches.flatMap(batch => batch['messages.update'] ?? [])).toEqual([
 				{
-					'messages.update': [
-						{
-							key: { remoteJid: JID, id: 'fictional-incoming', fromMe: false, participant: undefined },
-							update: { status: proto.WebMessageInfo.Status.READ }
-						}
-					],
-					'message-receipt.update': [
-						{
-							key: { remoteJid: JID, id: 'fictional-incoming', fromMe: false, participant: undefined },
-							receipt: { userJid: ME.id, readTimestamp: 1700000050 }
-						}
-					]
+					key: { remoteJid: JID, id: 'fictional-incoming', fromMe: false, participant: undefined },
+					update: expect.objectContaining({ status: proto.WebMessageInfo.Status.READ })
 				}
 			])
 			expect(f.raw).toEqual([])

@@ -1,0 +1,67 @@
+name: Owned SDK CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    if: github.repository == 'gabrielMalonso/Baileys'
+    name: SDK lint, tests, build and package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24.18.0'
+          package-manager-cache: false
+      - run: corepack yarn install --immutable --mode=skip-build
+      - run: corepack yarn lint
+      - run: corepack yarn tsc -p maintenance/tsconfig.json
+      - run: corepack yarn prettier --check 'maintenance/*' upstream.json OWNED_SDK.md '.github/workflows/*.yml'
+      - run: node --test maintenance/*.test.ts
+      - run: corepack yarn test --runInBand
+      - run: corepack yarn build
+      - id: pack
+        run: node maintenance/sdk.ts pack
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: owned-sdk
+          include-hidden-files: true
+          path: |
+            ${{ steps.pack.outputs.directory }}/baileys.tgz
+            ${{ steps.pack.outputs.directory }}/sdk-release.json
+          retention-days: 7
+          if-no-files-found: error
+
+  release:
+    name: Publish validated SDK
+    needs: verify
+    if: github.repository == 'gabrielMalonso/Baileys' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24.18.0'
+          package-manager-cache: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: owned-sdk
+          path: .tmp/release
+      - name: Publish immutable package and provenance in this fork
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node maintenance/sdk.ts release
