@@ -1020,27 +1020,25 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			if (response) ev.emit('app-state.update', response)
 		})
 
-		if (config.emitOwnEvents) {
-			const { onMutation } = newAppStateChunkHandler(false)
-			const { mutationMap } = await decodePatches(
-				name,
-				[{ ...encodeResult!.patch, version: { version: encodeResult!.state.version } }],
-				initial!,
-				getAppStateSyncKey,
-				config.options,
-				undefined,
-				logger
-			)
-			for (const key in mutationMap) {
-				const observation = getChatAppStateAction(mutationMap[key]!, {
-					source: 'local-echo',
-					collection: name,
-					version: encodeResult!.state.version,
-					...(options.requestId !== undefined ? { requestId: options.requestId } : {})
-				})
-				if (observation) ev.emit('app-state.update', observation)
-				onMutation(mutationMap[key]!)
-			}
+		const { onMutation } = newAppStateChunkHandler(false)
+		const { mutationMap } = await decodePatches(
+			name,
+			[{ ...encodeResult!.patch, version: { version: encodeResult!.state.version } }],
+			initial!,
+			getAppStateSyncKey,
+			config.options,
+			undefined,
+			logger
+		)
+		for (const key in mutationMap) {
+			const observation = getChatAppStateAction(mutationMap[key]!, {
+				source: 'local-echo',
+				collection: name,
+				version: encodeResult!.state.version,
+				...(options.requestId !== undefined ? { requestId: options.requestId } : {})
+			})
+			if (observation) ev.emit('app-state.update', observation)
+			if (config.emitOwnEvents) onMutation(mutationMap[key]!)
 		}
 	}
 
